@@ -9,6 +9,18 @@ kotlin {
         namespace = "me.knighthat.discord"
         compileSdk = libs.versions.compileSdk.get().toInt()
         minSdk = libs.versions.minSdk.get().toInt()
+
+        // Explicitly declare both build types so that AGP attaches
+        // BuildTypeAttr to each published variant.  Without this, the
+        // android.kotlin.multiplatform.library plugin emits a single
+        // androidRuntimeElements configuration with no BuildTypeAttr,
+        // causing Gradle to see multiple matching candidates and fail
+        // with variant-ambiguity when any consumer (e.g. the licence-
+        // report task) asks for a specific build type like 'release'.
+        buildTypes {
+            release {}
+            debug {}
+        }
     }
 
     jvm()
