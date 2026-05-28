@@ -423,7 +423,7 @@ licenseReport {
     // For Android projects use 'releaseRuntimeClasspath' or 'yourFlavorNameReleaseRuntimeClasspath'
     // Use 'ALL' to dynamically resolve all configurations:
     // configurations = ALL
-    configurations = arrayOf( "githubUniversalProdUncompressedRuntimeClasspath" )
+    configurations = arrayOf( "githubUniversalProdReleaseRuntimeClasspath" )
 
     // Don't include artifacts of project's own group into the report
     excludeOwnGroup = true
