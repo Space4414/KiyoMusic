@@ -202,8 +202,15 @@ fun HomeQuickPicks(
 
         //Used to refresh chart when country change
         if (showCharts)
-            chartsPageResult =
+            chartsPageResult = runCatching {
                 Innertube.chartsPageComplete( countryCode )
+            }.fold(
+                onSuccess = { it },
+                onFailure = { err ->
+                    android.util.Log.e("HomeQuickPicks", "Charts failed with library crash: ${err.message}", err)
+                    Result.failure(err)
+                }
+            )
 
         if (loadedData) return
 
