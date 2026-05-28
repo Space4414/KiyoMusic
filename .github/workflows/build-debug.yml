@@ -1,8 +1,8 @@
 name: Alpha Build
 
 # Triggers on every push to main OR manual dispatch.
-# Each run produces 4 architecture-split APKs and publishes them
-# as a pre-release (alpha) on the Releases page with an auto-generated tag.
+# Each run produces 4 architecture-split, minified APKs (~14 MB each)
+# signed with a CI-generated keystore and published as a pre-release.
 on:
   push:
     branches: [ main ]
@@ -18,8 +18,10 @@ permissions:
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
   # One job per architecture – they run in parallel on separate runners.
-  # Each job builds only the ABI it owns, keeps the APK small (~14 MB),
-  # and uploads it as a workflow artifact for the release job to collect.
+  # Release build type is used (isMinifyEnabled + isShrinkResources = true)
+  # which shrinks APKs from ~40 MB (debug) to ~14 MB (release).
+  # A fresh self-signed keystore is generated per job so the APK is
+  # installable on devices (Android requires all APKs to be signed).
   # ──────────────────────────────────────────────────────────────────────────
 
   build-arm64:
@@ -45,13 +47,31 @@ jobs:
           key: gradle-arm64-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
           restore-keys: gradle-arm64-${{ runner.os }}-
 
-      - name: Build arm64 debug APK
-        run: ./gradlew assembleGithubArm64ProdDebug --no-daemon
+      - name: Generate CI signing keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$GITHUB_WORKSPACE/ci-keystore.jks" \
+            -alias ci \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=KiyoMusic CI, O=KiyoMusic, C=US" \
+            -storepass cipassword \
+            -keypass cipassword
+
+      - name: Build arm64 release APK
+        run: |
+          ./gradlew assembleGithubArm64ProdRelease \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/ci-keystore.jks" \
+            -Pandroid.injected.signing.store.password=cipassword \
+            -Pandroid.injected.signing.key.alias=ci \
+            -Pandroid.injected.signing.key.password=cipassword \
+            --no-daemon
 
       - name: Collect APK
         run: |
           mkdir -p out
-          cp composeApp/build/outputs/apk/githubArm64Prod/debug/Kreate-debug.apk \
+          cp composeApp/build/outputs/apk/githubArm64Prod/release/Kreate-arm64-v8a.apk \
              out/KiyoMusic-arm64-v8a.apk
 
       - uses: actions/upload-artifact@v4
@@ -83,13 +103,31 @@ jobs:
           key: gradle-arm32-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
           restore-keys: gradle-arm32-${{ runner.os }}-
 
-      - name: Build arm32 debug APK
-        run: ./gradlew assembleGithubArm32ProdDebug --no-daemon
+      - name: Generate CI signing keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$GITHUB_WORKSPACE/ci-keystore.jks" \
+            -alias ci \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=KiyoMusic CI, O=KiyoMusic, C=US" \
+            -storepass cipassword \
+            -keypass cipassword
+
+      - name: Build arm32 release APK
+        run: |
+          ./gradlew assembleGithubArm32ProdRelease \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/ci-keystore.jks" \
+            -Pandroid.injected.signing.store.password=cipassword \
+            -Pandroid.injected.signing.key.alias=ci \
+            -Pandroid.injected.signing.key.password=cipassword \
+            --no-daemon
 
       - name: Collect APK
         run: |
           mkdir -p out
-          cp composeApp/build/outputs/apk/githubArm32Prod/debug/Kreate-debug.apk \
+          cp composeApp/build/outputs/apk/githubArm32Prod/release/Kreate-armeabi-v7a.apk \
              out/KiyoMusic-armeabi-v7a.apk
 
       - uses: actions/upload-artifact@v4
@@ -121,13 +159,31 @@ jobs:
           key: gradle-x86_64-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
           restore-keys: gradle-x86_64-${{ runner.os }}-
 
-      - name: Build x86_64 debug APK
-        run: ./gradlew assembleGithubX86_64ProdDebug --no-daemon
+      - name: Generate CI signing keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$GITHUB_WORKSPACE/ci-keystore.jks" \
+            -alias ci \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=KiyoMusic CI, O=KiyoMusic, C=US" \
+            -storepass cipassword \
+            -keypass cipassword
+
+      - name: Build x86_64 release APK
+        run: |
+          ./gradlew assembleGithubX86_64ProdRelease \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/ci-keystore.jks" \
+            -Pandroid.injected.signing.store.password=cipassword \
+            -Pandroid.injected.signing.key.alias=ci \
+            -Pandroid.injected.signing.key.password=cipassword \
+            --no-daemon
 
       - name: Collect APK
         run: |
           mkdir -p out
-          cp composeApp/build/outputs/apk/githubX86_64Prod/debug/Kreate-debug.apk \
+          cp composeApp/build/outputs/apk/githubX86_64Prod/release/Kreate-x86_64.apk \
              out/KiyoMusic-x86_64.apk
 
       - uses: actions/upload-artifact@v4
@@ -159,13 +215,31 @@ jobs:
           key: gradle-x86-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
           restore-keys: gradle-x86-${{ runner.os }}-
 
-      - name: Build x86 debug APK
-        run: ./gradlew assembleGithubX86ProdDebug --no-daemon
+      - name: Generate CI signing keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$GITHUB_WORKSPACE/ci-keystore.jks" \
+            -alias ci \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=KiyoMusic CI, O=KiyoMusic, C=US" \
+            -storepass cipassword \
+            -keypass cipassword
+
+      - name: Build x86 release APK
+        run: |
+          ./gradlew assembleGithubX86ProdRelease \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/ci-keystore.jks" \
+            -Pandroid.injected.signing.store.password=cipassword \
+            -Pandroid.injected.signing.key.alias=ci \
+            -Pandroid.injected.signing.key.password=cipassword \
+            --no-daemon
 
       - name: Collect APK
         run: |
           mkdir -p out
-          cp composeApp/build/outputs/apk/githubX86Prod/debug/Kreate-debug.apk \
+          cp composeApp/build/outputs/apk/githubX86Prod/release/Kreate-x86.apk \
              out/KiyoMusic-x86.apk
 
       - uses: actions/upload-artifact@v4
@@ -227,8 +301,10 @@ jobs:
           body: |
             ## Alpha build – ${{ steps.meta.outputs.name }}
 
-            > This is an **unsigned debug build** for testing only.
-            > Not intended for daily use.
+            > **Minified release build** (~14 MB per arch), signed with a CI-generated
+            > certificate. Suitable for daily testing. Because the signing key is
+            > regenerated on every run, you must **uninstall** any previous alpha before
+            > installing a newer one.
 
             ### Latest commit
             ${{ steps.commit.outputs.message }}
