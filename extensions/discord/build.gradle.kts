@@ -5,6 +5,10 @@ plugins {
 }
 
 kotlin {
+    // Note: android.kotlin.multiplatform.library does not expose a buildTypes {}
+    // DSL inside androidLibrary {} at AGP 8.13.2.  Build types (debug/release)
+    // are created automatically by the plugin; variant publishing of BuildTypeAttr
+    // is a known upstream limitation tracked separately.
     androidLibrary {
         namespace = "me.knighthat.discord"
         compileSdk = libs.versions.compileSdk.get().toInt()
