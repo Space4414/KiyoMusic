@@ -4,7 +4,6 @@
 
   import android.annotation.SuppressLint
   import android.content.Context
-import android.os.Build
   import android.net.ConnectivityManager
   import androidx.compose.runtime.getValue
   import androidx.compose.ui.util.fastFilter
@@ -295,19 +294,24 @@ import android.os.Build
           //   YouTube echoes back in responseContext.visitorData.
           val isLoggedIn = Preferences.YOUTUBE_COOKIES.value.contains( "SAPISID" )
 
-          val playerContext = if( method == METHOD_ANDROID ) {
-              val base = me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
-              // When logged in, YouTube's authenticated player endpoint validates
-              // androidSdkVersion against the account session's known device info.
-              // Hardcoding 35 (Android 14) on a device running a lower API level (e.g.
-              // API 24 / Android 7) causes HTTP 400 INVALID_ARGUMENT on authenticated
-              // requests while unauthenticated requests pass through unvalidated.
-              if( isLoggedIn )
-                  base.copy( client = base.client.copy( androidSdkVersion = Build.VERSION.SDK_INT ) )
-              else
-                  base
-          } else
-              me.knighthat.innertube.request.body.Context.IOS_DEFAULT
+          val playerContext = when {
+              // SAPISID cookies are browser-session auth — incompatible with mobile clients.
+              // Real Android/iOS YouTube apps authenticate via OAuth2 bearer tokens, NOT
+              // SAPISID cookies.  Sending SAPISID with a mobile client context (ANDROID or
+              // IOS) causes the authenticated player endpoint to reject the request with
+              // HTTP 400 INVALID_ARGUMENT on ALL Android versions, not just API 24.
+              // Fix: use web clients designed for SAPISID auth when the user is logged in.
+              // TVHTML5_EMBEDDED_PLAYER: returns cipher-free stream URLs, no signatureTimestamp
+              // WEB_REMIX: fallback — proven to work with SAPISID (browse requests all succeed)
+              isLoggedIn && method == METHOD_ANDROID ->
+                  me.knighthat.innertube.request.body.Context.TVHTML5_EMBEDDED_PLAYER_DEFAULT
+              isLoggedIn -> // IOS fallback path while logged in — stay on web clients
+                  me.knighthat.innertube.request.body.Context.WEB_REMIX_DEFAULT
+              method == METHOD_ANDROID ->
+                  me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
+              else ->
+                  me.knighthat.innertube.request.body.Context.IOS_DEFAULT
+          }
 
           // When logged in: pass null → getContext() uses provider.visitorData (account data)
           // When not logged in: pass the cached/hardcoded token so getContext() uses the
