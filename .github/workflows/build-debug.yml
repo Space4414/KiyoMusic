@@ -1,53 +1,253 @@
-name: Build Debug APK
+name: Alpha Build
 
+# Triggers on every push to main OR manual dispatch.
+# Each run produces 4 architecture-split APKs and publishes them
+# as a pre-release (alpha) on the Releases page with an auto-generated tag.
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
 concurrency:
-  group: build-debug-${{ github.ref }}
+  group: alpha-build-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write       # required to create releases and upload assets
+
 jobs:
-  build:
-    name: Build debug APK
+  # ──────────────────────────────────────────────────────────────────────────
+  # One job per architecture – they run in parallel on separate runners.
+  # Each job builds only the ABI it owns, keeps the APK small (~14 MB),
+  # and uploads it as a workflow artifact for the release job to collect.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  build-arm64:
+    name: Build arm64-v8a
     runs-on: ubuntu-latest
     timeout-minutes: 60
-
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 1
 
-      - name: Setup Java 21
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           java-version: "21"
           distribution: "corretto"
 
-      - name: Restore Gradle cache
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
-            ./build
-            ./composeApp/build
-          key: gradle-debug-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
-          restore-keys: gradle-debug-${{ runner.os }}-
+            ~/.gradle/wrapper
+          key: gradle-arm64-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: gradle-arm64-${{ runner.os }}-
 
-      - name: Build debug APK (no signing required)
-        run: ./gradlew assembleGithubUniversalProdDebug --no-daemon
+      - name: Build arm64 debug APK
+        run: ./gradlew assembleGithubArm64ProdDebug --no-daemon
 
-      - name: Rename APK
+      - name: Collect APK
         run: |
           mkdir -p out
-          cp composeApp/build/outputs/apk/githubUniversalProd/debug/Kreate-debug.apk out/KiyoMusic-debug.apk
+          cp composeApp/build/outputs/apk/githubArm64Prod/debug/Kreate-debug.apk \
+             out/KiyoMusic-arm64-v8a.apk
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: KiyoMusic-debug-apk
-          path: out/KiyoMusic-debug.apk
-          retention-days: 7
+          name: apk-arm64
+          path: out/KiyoMusic-arm64-v8a.apk
+          retention-days: 3
+
+  build-arm32:
+    name: Build armeabi-v7a
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "corretto"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-arm32-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: gradle-arm32-${{ runner.os }}-
+
+      - name: Build arm32 debug APK
+        run: ./gradlew assembleGithubArm32ProdDebug --no-daemon
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp composeApp/build/outputs/apk/githubArm32Prod/debug/Kreate-debug.apk \
+             out/KiyoMusic-armeabi-v7a.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-arm32
+          path: out/KiyoMusic-armeabi-v7a.apk
+          retention-days: 3
+
+  build-x86_64:
+    name: Build x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "corretto"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-x86_64-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: gradle-x86_64-${{ runner.os }}-
+
+      - name: Build x86_64 debug APK
+        run: ./gradlew assembleGithubX86_64ProdDebug --no-daemon
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp composeApp/build/outputs/apk/githubX86_64Prod/debug/Kreate-debug.apk \
+             out/KiyoMusic-x86_64.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-x86_64
+          path: out/KiyoMusic-x86_64.apk
+          retention-days: 3
+
+  build-x86:
+    name: Build x86
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "corretto"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-x86-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: gradle-x86-${{ runner.os }}-
+
+      - name: Build x86 debug APK
+        run: ./gradlew assembleGithubX86ProdDebug --no-daemon
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp composeApp/build/outputs/apk/githubX86Prod/debug/Kreate-debug.apk \
+             out/KiyoMusic-x86.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-x86
+          path: out/KiyoMusic-x86.apk
+          retention-days: 3
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Release job – waits for all 4 arch builds, then publishes them together
+  # as a pre-release with an auto-generated tag.
+  # Tag format:  alpha-YYYYMMDD-<short SHA>   e.g. alpha-20260528-abc1234
+  # ──────────────────────────────────────────────────────────────────────────
+  release:
+    name: Publish alpha release
+    needs: [ build-arm64, build-arm32, build-x86_64, build-x86 ]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download all APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: apk-*
+          path: release-apks
+          merge-multiple: true
+
+      - name: List collected APKs
+        run: ls -lh release-apks/
+
+      - name: Generate release tag and metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DATE=$(date +'%Y%m%d')
+          DOTDATE=$(date +'%Y.%m.%d')
+          TAG="alpha-${DATE}-${SHORT_SHA}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "name=Alpha ${DOTDATE} (${SHORT_SHA})" >> $GITHUB_OUTPUT
+
+      - name: Get commit message for release body
+        id: commit
+        run: |
+          MSG=$(git log -1 --pretty=format:"%s%n%n%b")
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          echo "$MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub alpha release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            ## Alpha build – ${{ steps.meta.outputs.name }}
+
+            > This is an **unsigned debug build** for testing only.
+            > Not intended for daily use.
+
+            ### Latest commit
+            ${{ steps.commit.outputs.message }}
+
+            ---
+
+            ### Download the right APK for your device
+
+            | APK | Architecture | Most common on |
+            |-----|-------------|----------------|
+            | `KiyoMusic-arm64-v8a.apk` | arm64-v8a | All modern Android phones (2015+) |
+            | `KiyoMusic-armeabi-v7a.apk` | armeabi-v7a | Older 32-bit phones incl. Android 7 |
+            | `KiyoMusic-x86_64.apk` | x86_64 | Android emulators (64-bit) |
+            | `KiyoMusic-x86.apk` | x86 | Android emulators (32-bit) |
+
+            > **Android 7 users:** use `KiyoMusic-armeabi-v7a.apk`
+          files: |
+            release-apks/KiyoMusic-arm64-v8a.apk
+            release-apks/KiyoMusic-armeabi-v7a.apk
+            release-apks/KiyoMusic-x86_64.apk
+            release-apks/KiyoMusic-x86.apk
+          token: ${{ secrets.GITHUB_TOKEN }}
