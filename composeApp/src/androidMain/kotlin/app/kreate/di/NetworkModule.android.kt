@@ -169,7 +169,7 @@ private fun verifyDoH( resolver: DnsOverHttps, addresses: List<InetAddress>, dom
   private class YouTubeAuthInterceptor : okhttp3.Interceptor {
 
       private fun injectVisitorDataIntoBody(bodyString: String, visitorData: String): String {
-          val clientKey = "\"client":"
+          val clientKey = "\"client\":"
           val idx = bodyString.indexOf(clientKey)
           if (idx == -1) return bodyString
 
