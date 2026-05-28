@@ -76,7 +76,12 @@ jobs:
           distribution: "corretto"
 
       - name: Generate license report
-        run: ./gradlew generateLicenseReport
+        # --no-configuration-cache: the jk1/dependency-license-report plugin
+        # (com.github.jk1.license.task.ReportTask) accesses DefaultProject at
+        # task-execution time, which Gradle 9.x configuration cache prohibits.
+        # This flag disables the cache for this single task only and has no
+        # effect on the debug/release APK builds.
+        run: ./gradlew generateLicenseReport --no-configuration-cache
 
       - name: "DEBUG: Print license report"
         run: cat "$REPORT_PATH"
