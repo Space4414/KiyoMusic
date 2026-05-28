@@ -278,28 +278,48 @@
           // constants per client type, bypassing the broken /visitor_id YouTube endpoint
           // (which now returns HTTP 400 for all known request formats).
           //
-          // Pass visitor data explicitly (never null) so that InnertubeImpl.getContext()
-          // uses the real base64 protobuf token instead of falling back to the user-agent
-          // string (its current null-fallback behaviour).  After the first successful
-          // response we replace the hardcoded constant with the fresh token YouTube
-          // echoes back in responseContext.visitorData, keeping it current without
-          // any extra network calls.
+          // spc (Signed Playback Context) mismatch when logged in:
+          //   The OkHttpClient sends YouTube SAPISID cookies on every request, including
+          //   stream chunk fetches.  If the player request uses useLogin=false, YouTube CDN
+          //   generates an anonymous spc token that it then rejects when it sees the
+          //   authenticated cookies on the follow-up stream request → HTTP 403.
+          //   Fix: mirror the login state in the player request so the spc is bound to the
+          //   same auth context as the rest of the HTTP session.
+          //
+          // visitorData when NOT logged in:
+          //   InnertubeImpl.getContext() falls back to template.client.userAgent (a user-agent
+          //   string, not a valid protobuf token) when visitorData=null is passed and
+          //   useLogin=false.  We pass the real hardcoded constant explicitly to avoid this.
+          //   After the first successful response we update the cache with the fresh token
+          //   YouTube echoes back in responseContext.visitorData.
+          val isLoggedIn = Preferences.YOUTUBE_COOKIES.value.contains( "SAPISID" )
+
           val playerContext = if( method == METHOD_ANDROID )
               me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
           else
               me.knighthat.innertube.request.body.Context.IOS_DEFAULT
-          val visitorData = cachedVisitorData.get() ?: playerContext.client.visitorData
+
+          // When logged in: pass null → getContext() uses provider.visitorData (account data)
+          // When not logged in: pass the cached/hardcoded token so getContext() uses the
+          //   correct base64 protobuf string instead of falling back to the userAgent string.
+          val visitorData = if( isLoggedIn ) null
+                            else cachedVisitorData.get() ?: playerContext.client.visitorData
+
           val response = Innertube.player(
               songId = songId,
               context = playerContext,
               localization = CURRENT_LOCALE,
               signatureTimestamp = null,
               visitorData = visitorData,
-              useLogin = false
+              useLogin = isLoggedIn
           ).getOrThrow()
-          // Cache the fresh visitor-data token YouTube echoes in every player response
-          // so the next request carries a live token rather than the hardcoded fallback.
-          response.responseContext.visitorData?.also { cachedVisitorData.set( it ) }
+
+          // Cache the fresh visitor-data token YouTube echoes in every player response so
+          // the next anonymous request carries a live token instead of the hardcoded fallback.
+          // (Not needed when logged in — provider.visitorData already holds the account token.)
+          if( !isLoggedIn ) {
+              response.responseContext.visitorData?.also { cachedVisitorData.set( it ) }
+          }
           //</editor-fold>
           //<editor-fold desc="Verify playability">
           val playabilityStatus = requireNotNull( response.playabilityStatus ) {
