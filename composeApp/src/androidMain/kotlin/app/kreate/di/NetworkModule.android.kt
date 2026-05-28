@@ -173,12 +173,15 @@ private fun verifyDoH( resolver: DnsOverHttps, addresses: List<InetAddress>, dom
           val idx = bodyString.indexOf(clientKey)
           if (idx == -1) return bodyString
 
-          val closingBraceIdx = bodyString.indexOf("}", idx)
-          if (closingBraceIdx != -1 && bodyString.substring(idx, closingBraceIdx).contains("visitorData")) {
+          val openBraceIdx = bodyString.indexOf('{', idx + clientKey.length)
+          if (openBraceIdx == -1) return bodyString
+
+          val closingBraceIdx = bodyString.indexOf('}', openBraceIdx)
+          if (closingBraceIdx != -1 && bodyString.substring(openBraceIdx, closingBraceIdx).contains("visitorData")) {
               return bodyString
           }
 
-          val spliceIdx = idx + clientKey.length
+          val spliceIdx = openBraceIdx + 1
           return bodyString.substring(0, spliceIdx) +
                  "\"visitorData\":\"${visitorData}\"," +
                  bodyString.substring(spliceIdx)
