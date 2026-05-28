@@ -4,6 +4,7 @@
 
   import android.annotation.SuppressLint
   import android.content.Context
+import android.os.Build
   import android.net.ConnectivityManager
   import androidx.compose.runtime.getValue
   import androidx.compose.ui.util.fastFilter
@@ -294,9 +295,18 @@
           //   YouTube echoes back in responseContext.visitorData.
           val isLoggedIn = Preferences.YOUTUBE_COOKIES.value.contains( "SAPISID" )
 
-          val playerContext = if( method == METHOD_ANDROID )
-              me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
-          else
+          val playerContext = if( method == METHOD_ANDROID ) {
+              val base = me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
+              // When logged in, YouTube's authenticated player endpoint validates
+              // androidSdkVersion against the account session's known device info.
+              // Hardcoding 35 (Android 14) on a device running a lower API level (e.g.
+              // API 24 / Android 7) causes HTTP 400 INVALID_ARGUMENT on authenticated
+              // requests while unauthenticated requests pass through unvalidated.
+              if( isLoggedIn )
+                  base.copy( client = base.client.copy( androidSdkVersion = Build.VERSION.SDK_INT ) )
+              else
+                  base
+          } else
               me.knighthat.innertube.request.body.Context.IOS_DEFAULT
 
           // When logged in: pass null → getContext() uses provider.visitorData (account data)
