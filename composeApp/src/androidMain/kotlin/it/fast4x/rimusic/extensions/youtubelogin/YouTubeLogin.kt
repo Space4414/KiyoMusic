@@ -75,17 +75,22 @@ fun YouTubeLogin( onDone: () -> Unit ) {
                             // Innertube request is built (which reads the saved visitorData).
                             CoroutineScope(Dispatchers.IO).launch {
                                 delay(1_500L)
-                                Innertube.accountInfo(CURRENT_LOCALE)
-                                    .onSuccess {
-                                        Preferences.YOUTUBE_ACCOUNT_NAME.value = it.name
-                                        Preferences.YOUTUBE_ACCOUNT_EMAIL.value = it.email.orEmpty()
-                                        Preferences.YOUTUBE_SELF_CHANNEL_HANDLE.value = it.channelHandle.orEmpty()
-                                        Preferences.YOUTUBE_ACCOUNT_AVATAR.value = it.thumbnailUrl.firstOrNull()?.url.orEmpty()
-                                    }
-                                    .onFailure { err ->
-                                        Logger.e( "", err, "YouTubeLogin" )
-                                        Toaster.e( R.string.error_failed_to_acquire_account_info )
-                                    }
+                                // Preferences.setValue is @MainThread and silently drops writes
+                                // from any other thread (early-return guard in Preferences.kt).
+                                // Fetch the account info on IO, then switch to Main before writing.
+                                val result = Innertube.accountInfo(CURRENT_LOCALE)
+                                result.exceptionOrNull()?.let { err ->
+                                    Logger.e( "", err, "YouTubeLogin" )
+                                    Toaster.e( R.string.error_failed_to_acquire_account_info )
+                                    return@launch
+                                }
+                                val info = result.getOrNull() ?: return@launch
+                                withContext(Dispatchers.Main) {
+                                    Preferences.YOUTUBE_ACCOUNT_NAME.value = info.name
+                                    Preferences.YOUTUBE_ACCOUNT_EMAIL.value = info.email.orEmpty()
+                                    Preferences.YOUTUBE_SELF_CHANNEL_HANDLE.value = info.channelHandle.orEmpty()
+                                    Preferences.YOUTUBE_ACCOUNT_AVATAR.value = info.thumbnailUrl.firstOrNull()?.url.orEmpty()
+                                }
                             }
 
                             onDone()
