@@ -49,6 +49,7 @@ fun rememberPreference(key: String, defaultValue: Song?): MutableState<Song?> {
         mutableStatePreferenceOf(
             try {
                 context.preferences.getString(key, json)
+                    ?.takeIf { it != "null" }
                     ?.let { Json.decodeFromString<Song>(it) }
             } catch (e: Exception) {
                 Logger.e("RememberPreference RelatedPage Error", e, "LegacyPreferences" )
@@ -71,6 +72,7 @@ fun rememberPreference(key: String, defaultValue: Innertube.DiscoverPage?): Muta
         mutableStatePreferenceOf(
             try {
                 context.preferences.getString(key, json)
+                    ?.takeIf { it != "null" }
                     ?.let { Json.decodeFromString<Innertube.DiscoverPage>(it) }
             } catch (e: Exception) {
                 Logger.e("RememberPreference DiscoverPage Error", e, "LegacyPreferences" )
@@ -93,6 +95,7 @@ fun rememberPreference(key: String, defaultValue: Innertube.ChartsPage?): Mutabl
         mutableStatePreferenceOf(
             try {
                 context.preferences.getString(key, json)
+                    ?.takeIf { it != "null" }
                     ?.let { Json.decodeFromString<Innertube.ChartsPage>(it) }
             } catch (e: Exception) {
                 Logger.e("RememberPreference ChartsPage Error", e, "LegacyPreferences" )
@@ -115,6 +118,7 @@ fun rememberPreference(key: String, defaultValue: Innertube.RelatedPage?): Mutab
         mutableStatePreferenceOf(
             try {
                 context.preferences.getString(key, json)
+                    ?.takeIf { it != "null" }
                     ?.let { Json.decodeFromString<Innertube.RelatedPage>(it) }
             } catch (e: Exception) {
                 Logger.e("RememberPreference RelatedPage Error", e, "LegacyPreferences" )
@@ -137,6 +141,7 @@ fun rememberPreference(key: String, defaultValue: HomePage?): MutableState<HomeP
         mutableStatePreferenceOf(
             try {
                 context.preferences.getString(key, json)
+                    ?.takeIf { it != "null" }
                     ?.let { Json.decodeFromString<HomePage>(it) }
             } catch (e: Exception) {
                 Logger.e("RememberPreference HomePage Error", e, "LegacyPreferences" )
