@@ -296,3 +296,85 @@ but is the correct configuration for when the bug is eventually fixed upstream.
 
 No net change — a failed attempt to add `buildTypes { release {}; debug {} }`
 was reverted after it caused a Gradle script compilation error.
+
+
+  ---
+
+  ## Android 7 (API 24) Compatibility Fixes – Round 2 (2026-05-28)
+
+  ### Summary
+
+  Three files were patched to resolve compile errors and runtime crashes
+  on Android 7 (API 24) devices.  CI ("Alpha Build") was green after fixes
+  on all four ABIs (arm64-v8a, armeabi-v7a, x86_64, x86) plus the
+  "Publish alpha release" step.
+
+  ---
+
+  ### Fix 1 – Store.kt: runCatching wrapper + correct constant scope
+
+  **File:** `composeApp/src/androidMain/kotlin/app/kreate/android/network/innertube/Store.kt`
+
+  **Problems fixed:**
+  1. `companion object` is not valid inside a Kotlin `object` (singleton); the
+     compiler emits *"Modifier 'companion' is not applicable inside 'standalone object'"*.
+     → Moved `FALLBACK_IOS_VISITOR_DATA` to a top-level `private const val` inside
+     the `Store` object.
+  2. `getIosVisitorData()` was not guarded against exceptions thrown by
+     `YoutubeParsingHelper.getVisitorDataFromInnertube()` on API 24 (the NewPipe
+     submodule call relies on TLS cipher suites absent from Android 7's default
+     SSL context).  Adding `runCatching { … }.fold(onSuccess, onFailure)` ensures
+     the method returns `FALLBACK_IOS_VISITOR_DATA` instead of crashing or entering
+     an infinite retry loop.
+
+  **Commits:** `b5745df42b59786535d1fc4cfcb0d3b1f69bcf04`
+
+  ---
+
+  ### Fix 2 – NetworkModule.android.kt: Kotlin string-escape syntax error
+
+  **File:** `composeApp/src/androidMain/kotlin/app/kreate/di/NetworkModule.android.kt`
+
+  **Problem fixed:**
+  Inside `YouTubeAuthInterceptor.injectVisitorDataIntoBody()`, the string
+  literal that searches for the JSON key `"client":` was written as:
+
+  ```kotlin
+  val clientKey = "\"client":"    // BROKEN – closing " terminates the string early
+  ```
+
+  The second double-quote closed the string literal prematurely, leaving `:`
+  as an unexpected token.  The compiler emits:
+
+  > *Syntax error: Unexpected tokens (use ';' to separate expressions on the
+  > same line).*
+
+  Fix: escape both delimiter quotes properly:
+
+  ```kotlin
+  val clientKey = "\"client\":" // CORRECT – entire  "client":  is inside the string
+  ```
+
+  **Commits:** `64f58abedae20d8023397554e56ee77b73c0d8a5`
+
+  ---
+
+  ### Fix 3 – HomeQuickPicks.kt: NPE guard on chartsPageComplete (round 1)
+
+  **File:** `composeApp/src/androidMain/kotlin/it/fast4x/rimusic/ui/screens/home/HomeQuickPicks.kt`
+
+  This fix was applied in the previous session (commit `af6616a6`).
+  The `chartsPageComplete` assignment is wrapped in `runCatching().fold()` so a
+  `NullPointerException` thrown by a submodule that is absent from the ClassLoader
+  on API 24 is caught and the UI degrades gracefully instead of crashing.
+
+  ---
+
+  ### CI Run Reference
+
+  | Run ID | Commit | Result |
+  |---|---|---|
+  | 26561626511 | af6616a6 | ❌ FAILED (NetworkModule syntax error) |
+  | 26561908592 | 64f58abe | ❌ FAILED (Store.kt companion object error) |
+  | 26562135035 | b5745df4 | ✅ SUCCESS (all 4 ABIs + publish) |
+  
