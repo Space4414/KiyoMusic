@@ -3,6 +3,8 @@ package it.fast4x.rimusic.extensions.youtubelogin
 import android.annotation.SuppressLint
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Handler
+import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.SslErrorHandler
@@ -23,6 +25,7 @@ import it.fast4x.rimusic.LocalPlayerAwareWindowInsets
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.knighthat.innertube.Innertube
 import me.knighthat.utils.Toaster
@@ -46,26 +49,43 @@ fun YouTubeLogin( onDone: () -> Unit ) {
             WebView(context).apply {
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished( view: WebView, url: String? ) {
-                        // Use view.loadUrl() explicitly so the call target is always
-                        // the WebView parameter, not any ambient receiver.
-                        view.loadUrl("javascript:Android.onRetrieveVisitorData(window.yt.config_.VISITOR_DATA)")
-                        view.loadUrl("javascript:Android.onRetrieveDataSyncId(window.yt.config_.DATASYNC_ID)")
-
                         if ( url?.startsWith("https://music.youtube.com") == true ) {
-                            Preferences.YOUTUBE_COOKIES.value = CookieManager.getInstance().getCookie( url )
+                            // Save cookies immediately – this runs on the main thread
+                            // inside onPageFinished, so no dispatch needed.
+                            Preferences.YOUTUBE_COOKIES.value =
+                                CookieManager.getInstance().getCookie( url )
 
-                            CoroutineScope(Dispatchers.IO ).launch {
-                                Innertube.accountInfo(CURRENT_LOCALE )
-                                         .onSuccess {
-                                             Preferences.YOUTUBE_ACCOUNT_NAME.value = it.name
-                                             Preferences.YOUTUBE_ACCOUNT_EMAIL.value = it.email.orEmpty()
-                                             Preferences.YOUTUBE_SELF_CHANNEL_HANDLE.value = it.channelHandle.orEmpty()
-                                             Preferences.YOUTUBE_ACCOUNT_AVATAR.value = it.thumbnailUrl.firstOrNull()?.url.orEmpty()
-                                         }
-                                         .onFailure { err ->
-                                             Logger.e( "", err, "YouTubeLogin" )
-                                             Toaster.e( R.string.error_failed_to_acquire_account_info )
-                                         }
+                            // Inject JS to pull visitorData and dataSyncId from the
+                            // YouTube Music page config.  Guard window.yt so that a
+                            // missing object returns null instead of throwing a JS error
+                            // that would silently drop the callback.
+                            view.loadUrl(
+                                "javascript:Android.onRetrieveVisitorData(" +
+                                "(window.yt && window.yt.config_) ? window.yt.config_.VISITOR_DATA : null)"
+                            )
+                            view.loadUrl(
+                                "javascript:Android.onRetrieveDataSyncId(" +
+                                "(window.yt && window.yt.config_) ? window.yt.config_.DATASYNC_ID : null)"
+                            )
+
+                            // Delay accountInfo so the JS bridge callbacks have time to
+                            // complete and post their Preference writes to the main thread.
+                            // Log evidence: callbacks arrive ~6 s after onPageFinished;
+                            // 1 500 ms is a safe margin for the write to land before the
+                            // Innertube request is built (which reads the saved visitorData).
+                            CoroutineScope(Dispatchers.IO).launch {
+                                delay(1_500L)
+                                Innertube.accountInfo(CURRENT_LOCALE)
+                                    .onSuccess {
+                                        Preferences.YOUTUBE_ACCOUNT_NAME.value = it.name
+                                        Preferences.YOUTUBE_ACCOUNT_EMAIL.value = it.email.orEmpty()
+                                        Preferences.YOUTUBE_SELF_CHANNEL_HANDLE.value = it.channelHandle.orEmpty()
+                                        Preferences.YOUTUBE_ACCOUNT_AVATAR.value = it.thumbnailUrl.firstOrNull()?.url.orEmpty()
+                                    }
+                                    .onFailure { err ->
+                                        Logger.e( "", err, "YouTubeLogin" )
+                                        Toaster.e( R.string.error_failed_to_acquire_account_info )
+                                    }
                             }
 
                             onDone()
@@ -93,7 +113,9 @@ fun YouTubeLogin( onDone: () -> Unit ) {
                         Logger.w("YouTubeLogin") {
                             "SSL error on ${error.url} primaryError=${error.primaryError}"
                         }
-                        val host = runCatching { Uri.parse(error.url).host.orEmpty() }.getOrDefault("")
+                        val host = runCatching {
+                            Uri.parse(error.url).host.orEmpty()
+                        }.getOrDefault("")
                         val isTrustedDomain =
                             host.endsWith("google.com")      ||
                             host.endsWith("youtube.com")     ||
@@ -122,16 +144,29 @@ fun YouTubeLogin( onDone: () -> Unit ) {
                 }
                 addJavascriptInterface(
                     object {
+                        /**
+                         * Called by JS on the WebView JavaBridge thread.
+                         * Preferences.setValue requires the main thread, so we post
+                         * via Handler(Looper.getMainLooper()) instead of writing
+                         * directly, which would trigger the thread-safety guard and
+                         * leave the value unset (causing accountInfo to use stale
+                         * visitorData and the server to return logged_in=0).
+                         */
                         @Suppress("unused")
                         @JavascriptInterface
                         fun onRetrieveVisitorData( newVisitorData: String? ) {
-                            Preferences.YOUTUBE_VISITOR_DATA.value = newVisitorData.orEmpty()
+                            Handler(Looper.getMainLooper()).post {
+                                Preferences.YOUTUBE_VISITOR_DATA.value = newVisitorData.orEmpty()
+                            }
                         }
 
                         @Suppress("unused")
                         @JavascriptInterface
                         fun onRetrieveDataSyncId( newDataSyncId: String? ) {
-                            Preferences.YOUTUBE_SYNC_ID.value = newDataSyncId.orEmpty().substringBefore("||")
+                            Handler(Looper.getMainLooper()).post {
+                                Preferences.YOUTUBE_SYNC_ID.value =
+                                    newDataSyncId.orEmpty().substringBefore("||")
+                            }
                         }
                     },
                     "Android"
