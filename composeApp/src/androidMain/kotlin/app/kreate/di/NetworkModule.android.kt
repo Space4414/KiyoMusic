@@ -205,7 +205,9 @@ private fun verifyDoH( resolver: DnsOverHttps, addresses: List<InetAddress>, dom
 
           // 2. POST body: inject visitorData into context.client if absent
           val originalBody = original.body
-          if (original.method == "POST" && originalBody != null) {
+          // Skip body injection for visitor_id endpoint — it's called to FETCH a new visitor ID,
+            // injecting a stored/fallback value into it causes the server to return HTTP 400
+            if (original.method == "POST" && originalBody != null && !original.url.encodedPath.contains("visitor_id")) {
               runCatching {
                   val buffer = Buffer()
                   originalBody.writeTo(buffer)
