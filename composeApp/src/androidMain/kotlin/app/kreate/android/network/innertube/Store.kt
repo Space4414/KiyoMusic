@@ -25,6 +25,7 @@ object Store {
     private lateinit var cookie: String
 
     private lateinit var iosVisitorData: String
+      private companion object { const val FALLBACK_IOS_VISITOR_DATA = "CgtvRlVmdTlydm45NCis6ZayBgoM" }
 
     @Blocking
     private suspend fun fetchIfNeeded() {
