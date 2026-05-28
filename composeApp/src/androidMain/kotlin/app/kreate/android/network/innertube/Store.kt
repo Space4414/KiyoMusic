@@ -1,98 +1,109 @@
 package app.kreate.android.network.innertube
 
-import io.ktor.client.request.get
-import io.ktor.client.request.headers
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.Headers
-import io.ktor.http.HttpHeaders
-import it.fast4x.innertube.Innertube
-import it.fast4x.innertube.models.Context
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
-import me.knighthat.utils.Toaster
-import org.jetbrains.annotations.Blocking
-import org.schabi.newpipe.extractor.localization.ContentCountry
-import org.schabi.newpipe.extractor.localization.Localization
-import org.schabi.newpipe.extractor.services.youtube.InnertubeClientRequestInfo
-import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
+  import io.ktor.client.request.get
+  import io.ktor.client.request.headers
+  import io.ktor.client.statement.bodyAsText
+  import io.ktor.http.Headers
+  import io.ktor.http.HttpHeaders
+  import it.fast4x.innertube.Innertube
+  import it.fast4x.innertube.models.Context
+  import kotlinx.coroutines.Dispatchers
+  import kotlinx.coroutines.runBlocking
+  import me.knighthat.utils.Toaster
+  import org.jetbrains.annotations.Blocking
+  import org.schabi.newpipe.extractor.localization.ContentCountry
+  import org.schabi.newpipe.extractor.localization.Localization
+  import org.schabi.newpipe.extractor.services.youtube.InnertubeClientRequestInfo
+  import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
 
-object Store {
+  object Store {
 
-    private const val DEFAULT_COOKIE = "PREF=hl=en&tz=UTC; SOCS=CAI"
+      private const val DEFAULT_COOKIE = "PREF=hl=en&tz=UTC; SOCS=CAI"
 
-    private lateinit var ghostResponseHeaders: Headers
-    private lateinit var ghostResponseBody: String
-    private lateinit var cookie: String
+      // Fallback used on API 24 devices when the NewPipe innertube call throws
+      private const val FALLBACK_IOS_VISITOR_DATA = "CgtvRlVmdTlydm45NCis6ZayBgoM"
 
-    private lateinit var iosVisitorData: String
-      private companion object { const val FALLBACK_IOS_VISITOR_DATA = "CgtvRlVmdTlydm45NCis6ZayBgoM" }
+      private lateinit var ghostResponseHeaders: Headers
+      private lateinit var ghostResponseBody: String
+      private lateinit var cookie: String
 
-    @Blocking
-    private suspend fun fetchIfNeeded() {
-        if( ::ghostResponseBody.isInitialized && ::ghostResponseHeaders.isInitialized )
-            return
+      private lateinit var iosVisitorData: String
 
-        runCatching {
-            Innertube.client.get("https://www.youtube.com/watch?v=dQw4w9WgXcQ&bpctr=9999999999&has_verified=1") {
-                headers {
-                    append( HttpHeaders.Connection, "Close" )
-                    append( HttpHeaders.Host, "https://www.youtube.com" )
-                    append( HttpHeaders.Cookie, DEFAULT_COOKIE )
-                    append( HttpHeaders.UserAgent, Context.USER_AGENT_WEB )
-                    append( "Sec-Fetch-Mode", "navigate" )
-                }
-            }
-        }.fold(
-            onSuccess = {
-                // Cache for later use
-                ghostResponseHeaders = it.headers
-                ghostResponseBody = it.bodyAsText()
-            },
-            onFailure = {
-                Toaster.e("Failed to get visitorData")
-                it.printStackTrace()
-            }
-        )
-    }
+      @Blocking
+      private suspend fun fetchIfNeeded() {
+          if( ::ghostResponseBody.isInitialized && ::ghostResponseHeaders.isInitialized )
+              return
 
-    fun getIosVisitorData(): String {
-        if( ::iosVisitorData.isInitialized )
-            return iosVisitorData
+          runCatching {
+              Innertube.client.get("https://www.youtube.com/watch?v=dQw4w9WgXcQ&bpctr=9999999999&has_verified=1") {
+                  headers {
+                      append( HttpHeaders.Connection, "Close" )
+                      append( HttpHeaders.Host, "https://www.youtube.com" )
+                      append( HttpHeaders.Cookie, DEFAULT_COOKIE )
+                      append( HttpHeaders.UserAgent, Context.USER_AGENT_WEB )
+                      append( "Sec-Fetch-Mode", "navigate" )
+                  }
+              }
+          }.fold(
+              onSuccess = {
+                  // Cache for later use
+                  ghostResponseHeaders = it.headers
+                  ghostResponseBody = it.bodyAsText()
+              },
+              onFailure = {
+                  Toaster.e("Failed to get visitorData")
+                  it.printStackTrace()
+              }
+          )
+      }
 
-        val headers: MutableMap<String, List<String>> = mutableMapOf()
-        headers["User-Agent"] = listOf( YoutubeParsingHelper.getIosUserAgent( Localization.DEFAULT ) )
-        headers.putAll(YoutubeParsingHelper.getOriginReferrerHeaders("https://www.youtube.com"))
+      fun getIosVisitorData(): String {
+          if( ::iosVisitorData.isInitialized )
+              return iosVisitorData
 
-        iosVisitorData = YoutubeParsingHelper.getVisitorDataFromInnertube(
-            InnertubeClientRequestInfo.ofIosClient(),
-            Localization.DEFAULT,
-            ContentCountry.DEFAULT,
-            headers,
-            YoutubeParsingHelper.YOUTUBEI_V1_URL,
-            null,
-            false
-        )
+          val headers: MutableMap<String, List<String>> = mutableMapOf()
+          headers["User-Agent"] = listOf( YoutubeParsingHelper.getIosUserAgent( Localization.DEFAULT ) )
+          headers.putAll(YoutubeParsingHelper.getOriginReferrerHeaders("https://www.youtube.com"))
 
-        return iosVisitorData
-    }
+          runCatching {
+              YoutubeParsingHelper.getVisitorDataFromInnertube(
+                  InnertubeClientRequestInfo.ofIosClient(),
+                  Localization.DEFAULT,
+                  ContentCountry.DEFAULT,
+                  headers,
+                  YoutubeParsingHelper.YOUTUBEI_V1_URL,
+                  null,
+                  false
+              )
+          }.fold(
+              onSuccess = { iosVisitorData = it },
+              onFailure = {
+                  android.util.Log.w("KiyoStore", "getIosVisitorData failed, using fallback", it)
+                  iosVisitorData = FALLBACK_IOS_VISITOR_DATA
+              }
+          )
 
-    @Blocking
-    fun getCookie(): String {
-        if( ::cookie.isInitialized )
-            return cookie
+          return iosVisitorData
+      }
 
-        runBlocking( Dispatchers.IO ) { fetchIfNeeded() }
+      @Blocking
+      fun getCookie(): String {
+          if( ::cookie.isInitialized )
+              return cookie
 
-        if( ::ghostResponseHeaders.isInitialized )
-            ghostResponseHeaders.getAll(HttpHeaders.SetCookie)
-                                .orEmpty()
-                                .joinToString("; ") {
-                                    it.split(";").first()
-                                }
-                                .let { cookie = "$DEFAULT_COOKIE; $it" }
-        else
-            cookie = DEFAULT_COOKIE
+          runBlocking( Dispatchers.IO ) { fetchIfNeeded() }
 
-        return cookie
-    }
-}
+          if( ::ghostResponseHeaders.isInitialized )
+              ghostResponseHeaders.getAll(HttpHeaders.SetCookie)
+                                  .orEmpty()
+                                  .joinToString("; ") {
+                                      it.split(";").first()
+                                  }
+                                  .let { cookie = "$DEFAULT_COOKIE; $it" }
+          else
+              cookie = DEFAULT_COOKIE
+
+          return cookie
+      }
+  }
+  
