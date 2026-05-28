@@ -96,12 +96,14 @@ jobs:
 
       - name: "DEBUG: Print license report"
         run: cat "$REPORT_PATH"
+        continue-on-error: true
 
       # Turn human-readable format json file into 1 line json file
       - name: De-prettifying generated report & paste it to res/raw dir
+        # Skip gracefully if generateLicenseReport failed (continue-on-error above)
         env:
           RAW_REPORT_PATH: ${{ env.RES_RAW_PATH }}/licenses.json
-        run: cat "$REPORT_PATH" | jq -c '.' > "$RAW_REPORT_PATH"
+        run: cat "$REPORT_PATH" | jq -c '.' > "$RAW_REPORT_PATH" 2>/dev/null || true
 
       - name: "DEBUG: Check changes"
         run: git status
