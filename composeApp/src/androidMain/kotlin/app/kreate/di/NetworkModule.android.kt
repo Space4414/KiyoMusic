@@ -13,7 +13,9 @@ import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.KotlinxWebsocketSerializationConverter
 import io.ktor.serialization.kotlinx.json.json
@@ -28,9 +30,11 @@ import me.knighthat.utils.Toaster
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.dnsoverhttps.DnsOverHttps
 import okhttp3.logging.HttpLoggingInterceptor
+import okio.Buffer
 import org.koin.core.module.Module
 import org.koin.dsl.module
 import org.schabi.newpipe.extractor.NewPipe
@@ -86,7 +90,170 @@ private fun verifyDoH( resolver: DnsOverHttps, addresses: List<InetAddress>, dom
         Toaster.w( R.string.error_failed_to_verify_doh )
     }.getOrDefault( false )
 
-actual val networkModule: Module = module {
+
+  // ── Fallback visitor token if none exists in preferences ─────────────────────
+  private const val FALLBACK_VISITOR_DATA = "CgtvRlVmdTlydm45NCis6ZayBgoM"
+
+  // ── Helper: resolve the best available visitorData token ─────────────────────
+  private fun resolveVisitorData(): String =
+      Preferences.YOUTUBE_VISITOR_DATA.value.takeIf { it.isNotBlank() && it != "null" }
+          ?: FALLBACK_VISITOR_DATA
+
+  // ── Helper: compute SAPISIDHASH from a cookie string ─────────────────────────
+  private fun computeSapisidHash(cookieValue: String): Triple<Long, String, String>? {
+      val sapisid = cookieValue.split(";")
+          .map { it.trim() }
+          .firstOrNull { part ->
+              part.startsWith("SAPISID=") ||
+              part.startsWith("__Secure-1PAPISID=") ||
+              part.startsWith("__Secure-3PAPISID=")
+          }?.substringAfter("=") ?: return null
+
+      val ts = System.currentTimeMillis() / 1000
+      val origin = "https://music.youtube.com"
+      val sha1 = java.security.MessageDigest
+          .getInstance("SHA-1")
+          .digest("$ts $sapisid $origin".toByteArray(Charsets.UTF_8))
+          .joinToString("") { "%02x".format(it) }
+
+      return Triple(ts, sha1, origin)
+  }
+
+  // ── Ktor-layer auth plugin ────────────────────────────────────────────────────
+  // Injects Cookie + SAPISIDHASH + X-Goog-Visitor-Id at the Ktor level on every
+  // outgoing request to youtube.com or youtubei.googleapis.com.
+  private val YouTubeKtorAuthPlugin = createClientPlugin("YouTubeKtorAuth") {
+      onRequest { request, _ ->
+          val host = request.url.host
+          val isYouTubeHost = host.endsWith("youtube.com") ||
+                              host.endsWith("youtubei.googleapis.com")
+          if (host.isBlank() || !isYouTubeHost) return@onRequest
+
+          val visitorData = resolveVisitorData()
+
+          // Always inject X-Goog-Visitor-Id (prevents NewPipe visitorData crash)
+          if (!request.headers.contains("X-Goog-Visitor-Id")) {
+              request.headers.append("X-Goog-Visitor-Id", visitorData)
+          }
+
+          // Resolve active cookie fresh at request time
+          val cookieValue: String? = Preferences.YOUTUBE_COOKIES.value.takeIf { it.isNotBlank() }
+
+          if (cookieValue.isNullOrBlank()) {
+              android.util.Log.d("KiyoKtorAuth", "No cookie for $host — skipping SAPISIDHASH")
+              return@onRequest
+          }
+
+          // Inject Cookie if not already present
+          if (!request.headers.contains(HttpHeaders.Cookie)) {
+              request.headers.append(HttpHeaders.Cookie, cookieValue)
+          }
+
+          // Compute and inject SAPISIDHASH + companion headers
+          if (!request.headers.contains(HttpHeaders.Authorization)) {
+              val (ts, sha1, origin) = computeSapisidHash(cookieValue) ?: run {
+                  android.util.Log.w("KiyoKtorAuth", "No SAPISID in cookie for $host")
+                  return@onRequest
+              }
+              request.headers.append(HttpHeaders.Authorization, "SAPISIDHASH ${ts}_${sha1}")
+              request.headers.append("X-Origin", origin)
+              request.headers.append("Referer", "$origin/")
+              request.headers.append("X-Goog-Authuser", "0")
+              android.util.Log.d("KiyoKtorAuth", "SAPISIDHASH injected at Ktor layer for $host")
+          }
+      }
+  }
+
+  // ── OkHttp network-level interceptor ─────────────────────────────────────────
+  // Catches requests that bypass Ktor (e.g. from NewPipeExtractor) at the socket layer.
+  private class YouTubeAuthInterceptor : okhttp3.Interceptor {
+
+      private fun injectVisitorDataIntoBody(bodyString: String, visitorData: String): String {
+          val clientKey = "\"client":"
+          val idx = bodyString.indexOf(clientKey)
+          if (idx == -1) return bodyString
+
+          val closingBraceIdx = bodyString.indexOf("}", idx)
+          if (closingBraceIdx != -1 && bodyString.substring(idx, closingBraceIdx).contains("visitorData")) {
+              return bodyString
+          }
+
+          val spliceIdx = idx + clientKey.length
+          return bodyString.substring(0, spliceIdx) +
+                 "\"visitorData\":\"${visitorData}\"," +
+                 bodyString.substring(spliceIdx)
+      }
+
+      override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+          val original = chain.request()
+          val host = original.url.host
+
+          val isYouTubeHost = host.endsWith("youtube.com") ||
+                              host.endsWith("youtubei.googleapis.com")
+          if (host.isBlank() || !isYouTubeHost) {
+              return chain.proceed(original)
+          }
+
+          val visitorData = resolveVisitorData()
+          val requestBuilder = original.newBuilder()
+
+          // 1. Always inject X-Goog-Visitor-Id
+          requestBuilder.header("X-Goog-Visitor-Id", visitorData)
+
+          // 2. POST body: inject visitorData into context.client if absent
+          val originalBody = original.body
+          if (original.method == "POST" && originalBody != null) {
+              runCatching {
+                  val buffer = Buffer()
+                  originalBody.writeTo(buffer)
+                  val bodyStr = buffer.readUtf8()
+                  val newBodyStr = injectVisitorDataIntoBody(bodyStr, visitorData)
+                  if (newBodyStr != bodyStr) {
+                      requestBuilder.method(
+                          original.method,
+                          newBodyStr.toRequestBody(originalBody.contentType())
+                      )
+                      android.util.Log.d("KiyoAuth", "visitorData injected into POST body for $host")
+                  }
+              }.onFailure { err ->
+                  android.util.Log.w("KiyoAuth", "Body injection failed for $host: ${err.message}")
+              }
+          }
+
+          // 3. Cookie + SAPISIDHASH
+          val existingCookie: String? = original.header("Cookie")
+          val cookieValue: String? = when {
+              !existingCookie.isNullOrBlank() -> existingCookie
+              else -> Preferences.YOUTUBE_COOKIES.value.takeIf { it.isNotBlank() }
+          }
+
+          if (cookieValue.isNullOrBlank()) {
+              return chain.proceed(requestBuilder.build())
+          }
+
+          if (existingCookie.isNullOrBlank()) {
+              requestBuilder.header("Cookie", cookieValue)
+          }
+
+          val (ts, sha1, origin) = computeSapisidHash(cookieValue) ?: run {
+              android.util.Log.w("KiyoAuth", "No SAPISID in cookie for $host")
+              return chain.proceed(requestBuilder.build())
+          }
+
+          android.util.Log.d("KiyoAuth", "SAPISIDHASH added for $host")
+
+          requestBuilder.apply {
+              header("Authorization", "SAPISIDHASH ${ts}_${sha1}")
+              header("X-Origin", origin)
+              header("Referer", "$origin/")
+              header("X-Goog-Authuser", "0")
+          }
+
+          return chain.proceed(requestBuilder.build())
+      }
+  }
+
+  actual val networkModule: Module = module {
     factory<Proxy> {       // Recreate proxy instance every time it's called
         if( !Preferences.IS_PROXY_ENABLED.value ) {
             Logger.d( tag = LOGGING_TAG ) { "Proxy is not enabled" }
@@ -138,6 +305,7 @@ actual val networkModule: Module = module {
                     .proxy( get() )
                     .dns( get() )
                     .addInterceptor( interceptor )
+                    .addNetworkInterceptor( YouTubeAuthInterceptor() )
                     .build()
                     .also {
                         NewPipe.init( NewPipeDownloaderImpl(it) )
@@ -162,6 +330,9 @@ actual val networkModule: Module = module {
             install(WebSockets ) {
                 contentConverter = KotlinxWebsocketSerializationConverter(JSON)
             }
+
+            // Install the YouTube / InnerTube credential loader plugin
+            install(YouTubeKtorAuthPlugin)
 
             engine {
                 preconfigured = get()
