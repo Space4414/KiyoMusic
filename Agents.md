@@ -368,13 +368,50 @@ was reverted after it caused a Gradle script compilation error.
   `NullPointerException` thrown by a submodule that is absent from the ClassLoader
   on API 24 is caught and the UI degrades gracefully instead of crashing.
 
-  ---
+    ---
 
-  ### CI Run Reference
+    ### Session 3 — Android 7 runtime bug fixes (2026-05-28)
 
-  | Run ID | Commit | Result |
-  |---|---|---|
-  | 26561626511 | af6616a6 | ❌ FAILED (NetworkModule syntax error) |
-  | 26561908592 | 64f58abe | ❌ FAILED (Store.kt companion object error) |
-  | 26562135035 | b5745df4 | ✅ SUCCESS (all 4 ABIs + publish) |
-  
+    #### Bug A — YouTubeLogin.kt: account prefs silently dropped on IO thread
+
+    **Root cause:** `Preferences.setValue` (in `app/kreate/android/Preferences.kt`) is
+    annotated `@MainThread` and contains an early-return guard:
+    `if (Looper.myLooper() != Looper.getMainLooper()) { Logger.e(...); return }`.
+    The `CoroutineScope(Dispatchers.IO).launch` block in `YouTubeLogin.kt` wrote
+    `YOUTUBE_ACCOUNT_NAME`, `EMAIL`, `SELF_CHANNEL_HANDLE`, and `AVATAR` directly
+    from the IO thread — all four writes were silently discarded on every login.
+
+    **Fix (commit cfecab6c + f341ff68 + 62593673):**
+    - Extract the `Result` from `Innertube.accountInfo()` into a local variable.
+    - Handle the failure path with `return@launch`.
+    - Call `withContext(Dispatchers.Main) { … }` around the four `.value =` assignments.
+    - Add the missing `import kotlinx.coroutines.withContext` (absent from the file).
+
+    #### Bug B — rimusic/utils/Preferences.kt: JsonDecodingException on cold start
+
+    **Root cause:** All five `rememberPreference` overloads (Song, RelatedPage,
+    DiscoverPage, ChartsPage, HomePage) call `Json.encodeToString(defaultValue)` to
+    produce a fallback JSON string. When `defaultValue` is `null` this produces the
+    literal string `"null"`. On a fresh install `SharedPreferences.getString(key, "null")`
+    returns `"null"` (no key stored yet), and passing that to `Json.decodeFromString`
+    throws `JsonDecodingException` (expected JSON object, got `n`) on every cold start.
+
+    **Fix (commit cfecab6c):**
+    Added `.takeIf { it != "null" }` between `getString()` and the
+    `Json.decodeFromString<T>(it)` call in all five overloads. The surrounding
+    `runCatching` / `getOrNull` already handles the exception path; the fix removes
+    the throw entirely so startup is clean.
+
+    ---
+
+    ### CI Run Reference (updated)
+
+    | Run ID | Commit | Result |
+    |---|---|---|
+    | 26561626511 | af6616a6 | ❌ FAILED (NetworkModule syntax error) |
+    | 26561908592 | 64f58abe | ❌ FAILED (Store.kt companion object error) |
+    | 26562135035 | b5745df4 | ✅ SUCCESS (all 4 ABIs + publish) |
+    | 26565691174 | cfecab6c | ❌ CANCELLED (superseded by next push) |
+    | 26565704357 | f341ff68 | ❌ FAILED (missing withContext import) |
+    | 26565889318 | 62593673 | ✅ SUCCESS (all 4 ABIs + publish) |
+    
