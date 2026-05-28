@@ -3,6 +3,7 @@ package me.knighthat.discord
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.webkit.MimeTypeMap
 import co.touchlab.kermit.Logger
 import io.ktor.client.HttpClient
@@ -44,6 +45,7 @@ import me.knighthat.utils.isLocalFile
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import java.util.concurrent.ConcurrentHashMap
+import javax.net.ssl.SSLContext
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -66,6 +68,30 @@ class DiscordImpl : Discord, KoinComponent {
 
         private val cachedExternalUrls = ConcurrentHashMap<String, String>()
         private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob() + CoroutineName(LOGGING_TAG))
+
+        /**
+         * Enable TLS 1.2 as the default SSL protocol on Android 7 (API 24-25).
+         *
+         * Android 7's Conscrypt/BoringSSL implementation may negotiate TLS 1.0
+         * by default for some server configurations, causing Discord's WSS gateway
+         * to reject the handshake and throw an unhandled SSLHandshakeException that
+         * crashes the host process.  Setting an explicit TLS 1.2 SSLContext as the
+         * JVM default fixes this without requiring additional runtime dependencies.
+         *
+         * This is a no-op on API >= 26 where TLS 1.2 (and 1.3) are already the
+         * negotiated defaults.
+         */
+        private fun bootstrapTls12IfNeeded() {
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.N_MR1) return
+            try {
+                val sc = SSLContext.getInstance("TLSv1.2")
+                sc.init(null, null, null)
+                SSLContext.setDefault(sc)
+                Logger.d(LOGGING_TAG) { "TLS 1.2 bootstrapped for Android ${Build.VERSION.SDK_INT}" }
+            } catch (e: Exception) {
+                Logger.w(LOGGING_TAG) { "Failed to bootstrap TLS 1.2: ${e.message}" }
+            }
+        }
     }
 
     private val client: HttpClient by inject()
@@ -82,7 +108,13 @@ class DiscordImpl : Discord, KoinComponent {
     @Volatile
     private var state: State = State.BROWSING
 
-    init { onTokenChanged() }
+    init {
+        // Bootstrap TLS 1.2 before any network calls are made.
+        // This is critical on Android 7 (API 24-25) where the default TLS
+        // negotiation can fail against Discord's gateway, crashing the app.
+        bootstrapTls12IfNeeded()
+        onTokenChanged()
+    }
 
     //<editor-fold defaultstate="collapsed" desc="External image handler">
     private suspend fun uploadLocalArtwork( artworkUri: Uri): Result<String> =
@@ -288,12 +320,6 @@ class DiscordImpl : Discord, KoinComponent {
     override suspend fun listening( song: ListeningActivity ) {
         try {
             lock.withLock {
-                /**
-                 * At first, we only check if websocket is established.
-                 * This is quick and reliable enough for the program
-                 * to start setting up other parts such as uploading artwork,
-                 * making [Activity], etc. These don't need websocket connection to work.
-                 */
                 val session = _session.load() ?: throw SessionNotAvailableException()
                 val assets = makeAssets( song.thumbnailUrl, song.artistThumbnailUrl )
                 val activity = Activity(
@@ -308,18 +334,14 @@ class DiscordImpl : Discord, KoinComponent {
                 )
                 val presence = Presence(listOf(activity), false)
 
-                // Update listening state can be triggered due to many factors:
-                // changing song, seeking to new position, skipping, etc.
-                // So we only check whether the request is duplicated.
                 if( presence == previousPresence ) {
                     logger.w { "Duplicate listening activity detected. Skipping..." }
                     return@withLock
                 }
 
-                // Now, before sending this request away, we must validate session.
                 if( session.isWebSocketConnected() ) {
                     session.sendActivity( presence )
-                    state = State.PLAYING       // Only update state if activity sent successfully
+                    state = State.PLAYING
                     previousPresence = presence
                 } else
                     throw SessionNotAvailableException()
@@ -335,12 +357,6 @@ class DiscordImpl : Discord, KoinComponent {
     override suspend fun pause( song: ListeningActivity ) {
         try {
             lock.withLock {
-                /**
-                 * At first, we only check if websocket is established.
-                 * This is quick and reliable enough for the program
-                 * to start setting up other parts such as uploading artwork,
-                 * making [Activity], etc. These don't need websocket connection to work.
-                 */
                 val session = _session.load() ?: throw SessionNotAvailableException()
                 val assets = makeAssets( song.thumbnailUrl, song.artistThumbnailUrl )
                 val activity = Activity(
@@ -355,17 +371,15 @@ class DiscordImpl : Discord, KoinComponent {
                 )
                 val presence = Presence(listOf(activity), true, System.currentTimeMillis())
 
-                // For pausing, only enact if it's not previously
                 val previousState = previousPresence?.activities?.firstOrNull()?.state
                 if( previousState == "Pausing" ) {
                     logger.w { "Duplicate pausing activity detected. Skipping..." }
                     return@withLock
                 }
 
-                // Now, before sending this request away, we must validate session.
                 if( session.isWebSocketConnected() ) {
                     session.sendActivity( presence )
-                    state = State.PAUSING       // Only update state if activity sent successfully
+                    state = State.PAUSING
                     previousPresence = presence
                 } else
                     throw SessionNotAvailableException()
@@ -381,12 +395,6 @@ class DiscordImpl : Discord, KoinComponent {
     override suspend fun reset() {
         try {
             lock.withLock {
-                /**
-                 * At first, we only check if websocket is established.
-                 * This is quick and reliable enough for the program
-                 * to start setting up other parts such as uploading artwork,
-                 * making [Activity], etc. These don't need websocket connection to work.
-                 */
                 val session = _session.load() ?: throw SessionNotAvailableException()
                 val assets = Assets(
                     largeImage = smallImage,
@@ -404,18 +412,15 @@ class DiscordImpl : Discord, KoinComponent {
                 )
                 val presence = Presence(listOf(activity), true, now)
 
-                // Similarly to pausing, resetting presence requires
-                // user not in the state already.
                 val previousState = previousPresence?.activities?.firstOrNull()?.state
                 if( previousState == "Browsing") {
                     logger.w { "Duplicate browsing activity detected. Skipping..." }
                     return@withLock
                 }
 
-                // Now, before sending this request away, we must validate session.
                 if( session.isWebSocketConnected() ) {
                     session.sendActivity( presence )
-                    state = State.BROWSING       // Only update state if activity sent successfully
+                    state = State.BROWSING
                     previousPresence = presence
                 } else
                     throw SessionNotAvailableException()
@@ -429,7 +434,6 @@ class DiscordImpl : Discord, KoinComponent {
     }
 
     enum class State {
-
         BROWSING, PAUSING, PLAYING;
     }
 }
