@@ -93,6 +93,24 @@
    */
   private val justInserted = AtomicReference("")
   private val cachedStreamUrl = ConcurrentMap<String, StreamCache>()
+
+  /**
+   * Visitor-data token obtained from a real YouTube player response.
+   *
+   * Starts as null (falls back to the hardcoded constant baked into
+   * [me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT] /
+   * [me.knighthat.innertube.request.body.Context.IOS_DEFAULT]).
+   *
+   * Updated after every successful [Innertube.player] call so that
+   * subsequent requests carry a freshly issued token. This makes the
+   * app resilient to YouTube rotating the hardcoded fallback values.
+   *
+   * Never touches [Preferences.YOUTUBE_VISITOR_DATA] — YouTube login
+   * state is completely unrelated and is managed separately by
+   * InnertubeProvider.
+   */
+  private val cachedVisitorData = AtomicReference<String?>(null)
+
   private val client: HttpClient by inject(HttpClient::class.java)
   private val context: Context by inject(Context::class.java)
   private val logger = Logger.withTag( "dataspec" )
@@ -259,18 +277,29 @@
           // Use the forked innertube-kotlin library which carries hardcoded visitor-data
           // constants per client type, bypassing the broken /visitor_id YouTube endpoint
           // (which now returns HTTP 400 for all known request formats).
+          //
+          // Pass visitor data explicitly (never null) so that InnertubeImpl.getContext()
+          // uses the real base64 protobuf token instead of falling back to the user-agent
+          // string (its current null-fallback behaviour).  After the first successful
+          // response we replace the hardcoded constant with the fresh token YouTube
+          // echoes back in responseContext.visitorData, keeping it current without
+          // any extra network calls.
           val playerContext = if( method == METHOD_ANDROID )
               me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
           else
               me.knighthat.innertube.request.body.Context.IOS_DEFAULT
+          val visitorData = cachedVisitorData.get() ?: playerContext.client.visitorData
           val response = Innertube.player(
               songId = songId,
               context = playerContext,
               localization = CURRENT_LOCALE,
               signatureTimestamp = null,
-              visitorData = null,
+              visitorData = visitorData,
               useLogin = false
           ).getOrThrow()
+          // Cache the fresh visitor-data token YouTube echoes in every player response
+          // so the next request carries a live token rather than the hardcoded fallback.
+          response.responseContext.visitorData?.also { cachedVisitorData.set( it ) }
           //</editor-fold>
           //<editor-fold desc="Verify playability">
           val playabilityStatus = requireNotNull( response.playabilityStatus ) {
