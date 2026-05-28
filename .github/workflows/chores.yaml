@@ -81,7 +81,18 @@ jobs:
         # task-execution time, which Gradle 9.x configuration cache prohibits.
         # This flag disables the cache for this single task only and has no
         # effect on the debug/release APK builds.
+        #
+        # continue-on-error: the :discord extension uses
+        # android.kotlin.multiplatform.library, which publishes a single
+        # androidRuntimeElements configuration without BuildTypeAttr.  This
+        # makes ALL its artifact variants (android-aar-metadata,
+        # android-classes-jar, android-art-profile, …) equally match any
+        # build-type consumer, giving Gradle an unresolvable tie.  This is an
+        # upstream incompatibility between AGP's KMP library plugin and the
+        # jk1 license-report plugin's resolution strategy.  We keep the step
+        # non-fatal so contributors/translators/house-keeping jobs continue.
         run: ./gradlew generateLicenseReport --no-configuration-cache
+        continue-on-error: true
 
       - name: "DEBUG: Print license report"
         run: cat "$REPORT_PATH"
