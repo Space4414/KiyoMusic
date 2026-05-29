@@ -278,13 +278,12 @@
           // constants per client type, bypassing the broken /visitor_id YouTube endpoint
           // (which now returns HTTP 400 for all known request formats).
           //
-          // spc (Signed Playback Context) mismatch when logged in:
-          //   The OkHttpClient sends YouTube SAPISID cookies on every request, including
-          //   stream chunk fetches.  If the player request uses useLogin=false, YouTube CDN
-          //   generates an anonymous spc token that it then rejects when it sees the
-          //   authenticated cookies on the follow-up stream request → HTTP 403.
-          //   Fix: mirror the login state in the player request so the spc is bound to the
-          //   same auth context as the rest of the HTTP session.
+          // spc (Signed Playback Context) consistency:
+          //   OkHttp's cookie jar sends SAPISID on every request — including both the
+          //   player API call and the subsequent stream chunk fetches.  YouTube therefore
+          //   produces an authenticated SPC in the player response, and the CDN accepts it
+          //   when the stream chunks also carry the SAPISID cookie.  No explicit auth
+          //   headers are needed in the player request; the cookie jar is sufficient.
           //
           // visitorData when NOT logged in:
           //   InnertubeImpl.getContext() falls back to template.client.userAgent (a user-agent
@@ -295,17 +294,26 @@
           val isLoggedIn = Preferences.YOUTUBE_COOKIES.value.contains( "SAPISID" )
 
           val playerContext = when {
-              // SAPISID cookies are browser-session auth — incompatible with mobile clients.
-              // Real Android/iOS YouTube apps authenticate via OAuth2 bearer tokens, NOT
-              // SAPISID cookies.  Sending SAPISID with a mobile client context (ANDROID or
-              // IOS) causes the authenticated player endpoint to reject the request with
-              // HTTP 400 INVALID_ARGUMENT on ALL Android versions, not just API 24.
-              // Fix: use web clients designed for SAPISID auth when the user is logged in.
-              // TVHTML5_EMBEDDED_PLAYER: returns cipher-free stream URLs, no signatureTimestamp
-              // WEB_REMIX: fallback — proven to work with SAPISID (browse requests all succeed)
-              isLoggedIn && method == METHOD_ANDROID ->
-                  me.knighthat.innertube.request.body.Context.TVHTML5_EMBEDDED_PLAYER_DEFAULT
-              isLoggedIn -> // IOS fallback path while logged in — stay on web clients
+              // When logged in, use WEB_REMIX for both the first attempt and the IOS
+              // fallback.  WEB_REMIX is the correct web client for SAPISID cookie sessions
+              // (same client used by browse and account_menu — both of which work correctly
+              // for authenticated users).
+              //
+              // We intentionally do NOT add an explicit SAPISIDHASH Authorization header
+              // (useLogin=false in the Innertube.player() call below).  The header is built
+              // as "SAPISIDHASH $h SAPISID1PHASH $h SAPISID3PHASH $h" using a single hash
+              // derived only from the SAPISID cookie.  YouTube's player endpoint validates
+              // each sub-hash against the matching cookie (__Secure-1PAPISID for
+              // SAPISID1PHASH, __Secure-3PAPISID for SAPISID3PHASH).  When those cookies
+              // differ from SAPISID (as is common), the hashes are wrong and the player
+              // returns HTTP 200 + "Video unavailable" instead of 400.
+              //
+              // Authentication is still handled correctly: OkHttp's cookie jar sends the
+              // SAPISID cookie on every request automatically (confirmed — it also sends it
+              // on stream chunk fetches), so YouTube sees an authenticated session and
+              // produces an authenticated SPC token.  Browse and account_menu already rely
+              // on the same implicit-cookie auth path and work without issues.
+              isLoggedIn ->
                   me.knighthat.innertube.request.body.Context.WEB_REMIX_DEFAULT
               method == METHOD_ANDROID ->
                   me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
@@ -325,7 +333,7 @@
               localization = CURRENT_LOCALE,
               signatureTimestamp = null,
               visitorData = visitorData,
-              useLogin = isLoggedIn
+              useLogin = false          // No SAPISIDHASH header; OkHttp cookie jar sends SAPISID implicitly
           ).getOrThrow()
 
           // Cache the fresh visitor-data token YouTube echoes in every player response so
