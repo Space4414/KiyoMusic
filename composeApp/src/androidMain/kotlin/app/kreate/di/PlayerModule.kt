@@ -294,32 +294,31 @@
           val isLoggedIn = Preferences.YOUTUBE_COOKIES.value.contains( "SAPISID" )
 
           val playerContext = when {
-              // When logged in, use WEB_REMIX for both the first attempt and the IOS
-              // fallback.  WEB_REMIX is the correct web client for SAPISID cookie sessions
-              // (same client used by browse and account_menu — both of which work correctly
-              // for authenticated users).
-              //
-              // We intentionally do NOT add an explicit SAPISIDHASH Authorization header
-              // (useLogin=false in the Innertube.player() call below).  The header is built
-              // as "SAPISIDHASH $h SAPISID1PHASH $h SAPISID3PHASH $h" using a single hash
-              // derived only from the SAPISID cookie.  YouTube's player endpoint validates
-              // each sub-hash against the matching cookie (__Secure-1PAPISID for
-              // SAPISID1PHASH, __Secure-3PAPISID for SAPISID3PHASH).  When those cookies
-              // differ from SAPISID (as is common), the hashes are wrong and the player
-              // returns HTTP 200 + "Video unavailable" instead of 400.
-              //
-              // Authentication is still handled correctly: OkHttp's cookie jar sends the
-              // SAPISID cookie on every request automatically (confirmed — it also sends it
-              // on stream chunk fetches), so YouTube sees an authenticated session and
-              // produces an authenticated SPC token.  Browse and account_menu already rely
-              // on the same implicit-cookie auth path and work without issues.
-              isLoggedIn ->
-                  me.knighthat.innertube.request.body.Context.WEB_REMIX_DEFAULT
-              method == METHOD_ANDROID ->
-                  me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
-              else ->
-                  me.knighthat.innertube.request.body.Context.IOS_DEFAULT
-          }
+                // Always use ANDROID for the first attempt and IOS for the fallback,
+                // regardless of login state.
+                //
+                // Why not WEB_REMIX when logged in?
+                // OkHttp's cookie jar automatically sends SAPISID cookies with every request
+                // to music.youtube.com, including the player API call.  YouTube treats a
+                // WEB_REMIX request that carries SAPISID as an authenticated browser session
+                // and then applies account-specific content restrictions — returning HTTP 200
+                // with playabilityStatus.status = "UNPLAYABLE" / reason = "Video unavailable"
+                // even for songs that exist and stream perfectly without login.
+                //
+                // YouTube treats the ANDROID client differently: it expects OAuth2 Bearer
+                // tokens for mobile auth, NOT SAPISID cookies.  When an ANDROID-context
+                // player request arrives without a Bearer token, YouTube ignores whatever
+                // cookies are in the jar and handles the request as anonymous — producing a
+                // valid stream URL identical to the no-login case that always works.
+                //
+                // The account-scoped features (library, history, recommendations) are served
+                // by browse / next endpoints which use WEB_REMIX + explicit Cookie header and
+                // are unaffected by this change.
+                method == METHOD_ANDROID ->
+                    me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
+                else ->
+                    me.knighthat.innertube.request.body.Context.IOS_DEFAULT
+            }
 
           // When logged in: pass null → getContext() uses provider.visitorData (account data)
           // When not logged in: pass the cached/hardcoded token so getContext() uses the
