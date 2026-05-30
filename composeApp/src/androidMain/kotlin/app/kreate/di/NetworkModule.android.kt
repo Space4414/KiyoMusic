@@ -136,6 +136,12 @@ private fun verifyDoH( resolver: DnsOverHttps, addresses: List<InetAddress>, dom
               request.headers.append("X-Goog-Visitor-Id", visitorData)
           }
 
+          // Player API uses ANDROID/IOS client context which expects OAuth2 Bearer auth,
+          // NOT SAPISID cookies.  Sending cookies with a non-web-client player request
+          // causes YouTube to return HTTP 400 INVALID_ARGUMENT regardless of login state.
+          val isPlayerEndpoint = request.url.encodedPath.contains("youtubei/v1/player")
+          if (isPlayerEndpoint) return@onRequest
+
           // Resolve active cookie fresh at request time
           val cookieValue: String? = Preferences.YOUTUBE_COOKIES.value.takeIf { it.isNotBlank() }
 
@@ -226,6 +232,12 @@ private fun verifyDoH( resolver: DnsOverHttps, addresses: List<InetAddress>, dom
           }
 
           // 3. Cookie + SAPISIDHASH
+          // Player API (ANDROID/IOS context) rejects SAPISID cookies → HTTP 400.
+          // Let these requests go cookie-free; visitorData is already in the body.
+          if (original.url.encodedPath.contains("youtubei/v1/player")) {
+              return chain.proceed(requestBuilder.build())
+          }
+
           val existingCookie: String? = original.header("Cookie")
           val cookieValue: String? = when {
               !existingCookie.isNullOrBlank() -> existingCookie
