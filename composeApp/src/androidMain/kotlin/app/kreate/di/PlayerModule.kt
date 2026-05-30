@@ -110,6 +110,10 @@
    * InnertubeProvider.
    */
   private val cachedVisitorData = AtomicReference<String?>(null)
+    /** Epoch ms when [cachedVisitorData] was last refreshed. */
+    private val cachedVisitorDataTime = AtomicLong(0L)
+    /** Invalidate anonymous visitor-data cache after 30 minutes. */
+    private val VISITOR_DATA_TTL_MS = 30L * 60L * 1_000L
 
   private val client: HttpClient by inject(HttpClient::class.java)
   private val context: Context by inject(Context::class.java)
@@ -323,8 +327,13 @@
           // When logged in: pass null → getContext() uses provider.visitorData (account data)
           // When not logged in: pass the cached/hardcoded token so getContext() uses the
           //   correct base64 protobuf string instead of falling back to the userAgent string.
+          //   Invalidate the cache after VISITOR_DATA_TTL_MS (30 min) so a stale token
+          //   never gets stuck in memory.
+          val storedVd = cachedVisitorData.get()
+          val vdExpired = (System.currentTimeMillis() - cachedVisitorDataTime.get()) > VISITOR_DATA_TTL_MS
           val visitorData = if( isLoggedIn ) null
-                            else cachedVisitorData.get() ?: playerContext.client.visitorData
+                            else if( storedVd != null && !vdExpired ) storedVd
+                            else playerContext.client.visitorData
 
           val response = Innertube.player(
               songId = songId,
@@ -338,8 +347,12 @@
           // Cache the fresh visitor-data token YouTube echoes in every player response so
           // the next anonymous request carries a live token instead of the hardcoded fallback.
           // (Not needed when logged in — provider.visitorData already holds the account token.)
+          // Stamp the refresh time so the 30-min TTL window resets on each successful fetch.
           if( !isLoggedIn ) {
-              response.responseContext.visitorData?.also { cachedVisitorData.set( it ) }
+              response.responseContext.visitorData?.also {
+                  cachedVisitorData.set( it )
+                  cachedVisitorDataTime.set( System.currentTimeMillis() )
+              }
           }
           //</editor-fold>
           //<editor-fold desc="Verify playability">
@@ -480,9 +493,20 @@
       // Normal HTTP requests are handled by [OkHttpDataSource.Factory]
       single {
           val engine: OkHttpClient = get()
+          // ExoPlayer stream requests go to *.googlevideo.com CDN servers.
+          // Sending SAPISID auth cookies to CDN causes HTTP 403 on chunk GETs:
+          // the CDN load-balancer redirects to a different edge server that
+          // rejects requests carrying auth cookies alongside an IOS/ANDROID
+          // spc token.  The spc already encodes auth — cookies are redundant
+          // on CDN requests and actively break CDN session routing.  Fix:
+          // use a cookie-free client for all stream/chunk fetches while the
+          // main (cookie-bearing) client continues to handle YouTube API calls.
+          val streamClient = engine.newBuilder()
+              .cookieJar( okhttp3.CookieJar.NO_COOKIES )
+              .build()
           DefaultDataSource.Factory(
               get(),
-              OkHttpDataSource.Factory( engine )
+              OkHttpDataSource.Factory( streamClient )
                   .setUserAgent( UserAgents.CHROME_WINDOWS )
           )
       }
