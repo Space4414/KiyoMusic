@@ -415,3 +415,39 @@ was reverted after it caused a Gradle script compilation error.
     | 26565704357 | f341ff68 | ❌ FAILED (missing withContext import) |
     | 26565889318 | 62593673 | ✅ SUCCESS (all 4 ABIs + publish) |
     
+
+  ## Session 3 (continued — May 2026)
+
+  ### Root Cause of 400 INVALID_ARGUMENT (logged in)
+
+  **Primary bug:** `YouTubeKtorAuthPlugin` (Ktor layer) and `YouTubeAuthInterceptor` (OkHttp layer)
+  in `NetworkModule.android.kt` inject `Cookie` + `SAPISIDHASH` on **every** YouTube request,
+  including the `/youtubei/v1/player` calls that use ANDROID/IOS client context.
+
+  YouTube's ANDROID and IOS client contexts expect OAuth2 Bearer auth — not SAPISID cookies.
+  When cookies are present, YouTube returns `HTTP 400 INVALID_ARGUMENT`.
+  The `InnertubeImpl.post(useLogin=false)` guard was already correct but was bypassed
+  by the Ktor/OkHttp auth injection layers.
+
+  **Secondary bug:** `Constants.IOS_API_KEY` in `innertube-kotlin` submodule was set to the
+  WEB_REMIX API key (`AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30`) instead of the IOS key.
+
+  ### Fix (commit ac676ae8 + submodule fix)
+
+  1. `NetworkModule.android.kt`:
+     - `YouTubeKtorAuthPlugin`: after injecting `X-Goog-Visitor-Id`, early-return for
+       `/youtubei/v1/player` paths before any Cookie/SAPISIDHASH injection.
+     - `YouTubeAuthInterceptor`: skip section 3 (Cookie + SAPISIDHASH) for player paths.
+  2. `Space4414/innertube-kotlin` `Constants.java`: fixed `IOS_API_KEY` to
+     `AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc`.
+
+  ### Key architecture notes
+
+  - `modules/innertube` is a git submodule → `https://github.com/Space4414/innertube-kotlin`
+  - All player API calls go through `me.knighthat.innertube.Innertube.player()` (submodule)
+  - Flow: `PlayerModule.makeStreamCache()` → `Innertube.player(ANDROID_DEFAULT)`
+          → OkHttp engine → BOTH Ktor plugin and OkHttp interceptor inject auth
+          → with fix: player requests go cookie-free
+  - ANDROID attempt first; IOS fallback if ANDROID fails
+  - Browse/search/account endpoints correctly keep Cookie + SAPISIDHASH (WEB_REMIX context)
+  
