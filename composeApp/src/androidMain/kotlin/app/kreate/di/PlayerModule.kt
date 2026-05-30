@@ -465,11 +465,28 @@
               } else {
                   YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated( songId, cache.playableUrl )
               }
-              val uri = "${deobUrl}&cpn=${cache.cpn}".toUri()
-              val length = CHUNK_LENGTH.takeIf { queryInChunks } ?: cache.contentLength
-
-              dataSpec.withUri( uri ).subrange( dataSpec.uriPositionOffset, length )
-          }
+              val chunkLen = CHUNK_LENGTH.takeIf { queryInChunks } ?: cache.contentLength
+                // YouTube CDN sets rqh=1 (range-query-hash required): HTTP Range headers
+                // are rejected for non-zero start positions.  Only a request starting at
+                // byte 0 survives via HTTP Range header; every subsequent chunk must encode
+                // its byte range as a URL query parameter (&range=START-END) instead.
+                //
+                // Fix: for every chunk, append &range=chunkStart-chunkEnd to the URL, then
+                // set both position and uriPositionOffset to chunkStart so that OkHttp
+                // computes:  httpRangePosition = position - uriPositionOffset = 0
+                // and therefore sends NO HTTP Range header.  The CDN serves the correct
+                // bytes via the URL parameter, and ExoPlayer/CacheDataSource store them at
+                // the right absolute offset (chunkStart) in the playback stream.
+                val chunkStart = position           // absolute byte offset in the stream
+                val chunkEnd   = chunkStart + chunkLen - 1L
+                val uri = "${deobUrl}&cpn=${cache.cpn}&range=${chunkStart}-${chunkEnd}".toUri()
+                dataSpec.buildUpon()
+                    .setUri( uri )
+                    .setPosition( chunkStart )
+                    .setUriPositionOffset( chunkStart )
+                    .setLength( chunkLen )
+                    .build()
+            }
       }
   //</editor-fold>
 
