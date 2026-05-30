@@ -440,7 +440,16 @@
               dataSpec
           } else {
               val cache = getPlayableUrl( songId )
-              val deobUrl = YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated( songId, cache.playableUrl )
+              // IOS stream URLs are pre-signed by YouTube's CDN with their own token scheme.
+              // Running them through the web-JS n-parameter deobfuscator corrupts their
+              // throttling token and causes HTTP 403 on actual chunk GETs even though
+              // the HEAD probe (which uses the raw URL) returns 200.
+              // Only apply deobfuscation for ANDROID/WEB client streams.
+              val deobUrl = if (cache.playableUrl.contains("c=IOS")) {
+                  cache.playableUrl
+              } else {
+                  YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated( songId, cache.playableUrl )
+              }
               val uri = "${deobUrl}&cpn=${cache.cpn}".toUri()
               val length = CHUNK_LENGTH.takeIf { queryInChunks } ?: cache.contentLength
 
