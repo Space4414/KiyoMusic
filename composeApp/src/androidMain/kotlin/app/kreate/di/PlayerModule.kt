@@ -362,8 +362,9 @@
               upsertSongFormat( songId, format )
 
               val contentLength = format.contentLength?.toLong() ?: CHUNK_LENGTH
-              val playableUrl = response.streamingData?.expiresInSeconds?.toLong() ?: ONE_HOUR
-              StreamCache(cpn, contentLength, streamUrl, playableUrl)
+              val expiresInSeconds = response.streamingData?.expiresInSeconds?.toLong() ?: 3600L
+              val expiredTimeMillis = System.currentTimeMillis() + expiresInSeconds * 1000L
+              StreamCache(cpn, contentLength, streamUrl, expiredTimeMillis)
           } else
               // Try again with IOS setup
               makeStreamCache( songId, isConnectionMetered, audioQuality, METHOD_IOS )
