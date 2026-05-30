@@ -139,7 +139,7 @@ private fun verifyDoH( resolver: DnsOverHttps, addresses: List<InetAddress>, dom
           // Player API uses ANDROID/IOS client context which expects OAuth2 Bearer auth,
           // NOT SAPISID cookies.  Sending cookies with a non-web-client player request
           // causes YouTube to return HTTP 400 INVALID_ARGUMENT regardless of login state.
-          val isPlayerEndpoint = request.url.encodedPath.contains("youtubei/v1/player")
+          val isPlayerEndpoint = request.url.buildString().contains("youtubei/v1/player")
           if (isPlayerEndpoint) return@onRequest
 
           // Resolve active cookie fresh at request time
