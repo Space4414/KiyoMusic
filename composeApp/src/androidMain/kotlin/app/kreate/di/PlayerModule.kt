@@ -253,16 +253,38 @@
       } ?: format.url!!
   //</editor-fold>
   //<editor-fold desc="Validators">
-  private suspend fun validateStreamUrl( streamUrl: String ): Boolean =
-      client.head( "${streamUrl}&range=0-${CHUNK_LENGTH}" )
-            .status
-            .also {
-                if( it.isSuccess() )
-                    logger.d { "Stream url validated successfully" }
-                else
-                    logger.w { "Stream url validation returns code ${it.value} - ${it.description}" }
-            }
-            .isSuccess()
+  /**
+   * Validate the stream URL by making a HEAD request.
+   *
+   * Retries once on SSL exceptions: Android 7 (API 24) has a TLS bug where
+   * concurrent SSL handshakes can fail with "Bad file descriptor". The first
+   * attempt to a new googlevideo.com server occasionally triggers this; a
+   * single retry on the same (now warmed-up) TLS session succeeds.
+   */
+  private suspend fun validateStreamUrl( streamUrl: String ): Boolean {
+      // Probe with a small initial range to avoid downloading large data during validation
+      val probeUrl = "${streamUrl}&range=0-${CHUNK_LENGTH}"
+      repeat(2) { attempt ->
+          try {
+              val status = client.head( probeUrl ).status
+              if( status.isSuccess() ) {
+                  logger.d { "Stream url validated successfully" }
+                  return true
+              } else {
+                  logger.w { "Stream url validation returns code ${status.value} - ${status.description}" }
+                  return false
+              }
+          } catch( e: Exception ) {
+              if( attempt == 0 ) {
+                  // Android 7 TLS "Bad file descriptor" transient failure — retry once
+                  logger.w { "validateStreamUrl attempt 1 failed (${e.message}), retrying..." }
+              } else {
+                  logger.e( "validateStreamUrl retry also failed, treating url as invalid", e )
+              }
+          }
+      }
+      return false
+  }
   //</editor-fold>
   //<editor-fold desc="Get response">
   @OptIn(ExperimentalSerializationApi::class)
@@ -497,7 +519,14 @@
                 // would cause HTTP 416 when position + chunkLen exceeds the file size.
                 val chunkEnd   = minOf(chunkStart + chunkLen - 1L, cache.contentLength - 1L)
                 val actualLen  = chunkEnd - chunkStart + 1L
-                val uri = "${deobUrl}&cpn=${cache.cpn}&range=${chunkStart}-${chunkEnd}".toUri()
+                // IOS stream URLs (c=IOS) reject the `cpn` (Client Playback Nonce)
+                // parameter — it is a WEB-client session tracking param and causes HTTP 403
+                // on IOS CDN validation.  WEB_REMIX URLs expect it for session affinity.
+                val uri = if( isIosUrl ) {
+                    "${deobUrl}&range=${chunkStart}-${chunkEnd}".toUri()
+                } else {
+                    "${deobUrl}&cpn=${cache.cpn}&range=${chunkStart}-${chunkEnd}".toUri()
+                }
                 dataSpec.buildUpon()
                     .setUri( uri )
                     .setPosition( chunkStart )
