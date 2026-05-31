@@ -99,7 +99,7 @@
    * Visitor-data token obtained from a real YouTube player response.
    *
    * Starts as null (falls back to the hardcoded constant baked into
-   * [me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT] /
+   * [me.knighthat.innertube.request.body.Context.WEB_REMIX_DEFAULT] /
    * [me.knighthat.innertube.request.body.Context.IOS_DEFAULT]).
    *
    * Updated after every successful [Innertube.player] call so that
@@ -299,28 +299,30 @@
           val isLoggedIn = Preferences.YOUTUBE_COOKIES.value.contains( "SAPISID" )
 
           val playerContext = when {
-                // Always use ANDROID for the first attempt and IOS for the fallback,
-                // regardless of login state.
+                // First attempt: WEB_REMIX.  Fallback: IOS.
                 //
-                // Why not WEB_REMIX when logged in?
-                // OkHttp's cookie jar automatically sends SAPISID cookies with every request
-                // to music.youtube.com, including the player API call.  YouTube treats a
-                // WEB_REMIX request that carries SAPISID as an authenticated browser session
-                // and then applies account-specific content restrictions — returning HTTP 200
-                // with playabilityStatus.status = "UNPLAYABLE" / reason = "Video unavailable"
-                // even for songs that exist and stream perfectly without login.
+                // Why WEB_REMIX instead of ANDROID?
+                // YouTube recently changed ANDROID stream URLs to include svpuc=1 (Signed
+                // Video Player URL Challenge), which causes every HEAD validation to return
+                // HTTP 403 regardless of login state.  The ANDROID path is therefore broken
+                // for all users on any Android API level.
                 //
-                // YouTube treats the ANDROID client differently: it expects OAuth2 Bearer
-                // tokens for mobile auth, NOT SAPISID cookies.  When an ANDROID-context
-                // player request arrives without a Bearer token, YouTube ignores whatever
-                // cookies are in the jar and handles the request as anonymous — producing a
-                // valid stream URL identical to the no-login case that always works.
+                // Why WEB_REMIX instead of IOS?
+                // IOS stream URLs include rqh=1 (Range-Query-Hash required).  The CDN uses
+                // a challenge-response protocol: after the first 512 KB chunk is served, all
+                // subsequent chunk GETs must include a hash provided by the CDN in the first
+                // response.  ExoPlayer does not implement this protocol, so chunk 2 always
+                // returns HTTP 416 (Range Not Satisfiable) even though the byte range is
+                // within the file.  This is why playback cuts out after ~1 minute.
                 //
-                // The account-scoped features (library, history, recommendations) are served
-                // by browse / next endpoints which use WEB_REMIX + explicit Cookie header and
-                // are unaffected by this change.
+                // Why not cookies with WEB_REMIX?
+                // Both YouTubeKtorAuthPlugin (Ktor layer) and YouTubeAuthInterceptor (OkHttp
+                // layer) already skip cookie and SAPISIDHASH injection for the player
+                // endpoint.  The WEB_REMIX player request goes out unauthenticated, which is
+                // exactly what we want: YouTube returns a cookie-free stream URL without
+                // svpuc=1 or rqh=1, compatible with chunked ExoPlayer streaming.
                 method == METHOD_ANDROID ->
-                    me.knighthat.innertube.request.body.Context.ANDROID_DEFAULT
+                    me.knighthat.innertube.request.body.Context.WEB_REMIX_DEFAULT
                 else ->
                     me.knighthat.innertube.request.body.Context.IOS_DEFAULT
             }
@@ -455,17 +457,30 @@
               dataSpec
           } else {
               val cache = getPlayableUrl( songId )
-              // IOS stream URLs are pre-signed by YouTube's CDN with their own token scheme.
-              // Running them through the web-JS n-parameter deobfuscator corrupts their
-              // throttling token and causes HTTP 403 on actual chunk GETs even though
-              // the HEAD probe (which uses the raw URL) returns 200.
-              // Only apply deobfuscation for ANDROID/WEB client streams.
-              val deobUrl = if (cache.playableUrl.contains("c=IOS")) {
+              // IOS stream URLs (c=IOS) carry rqh=1 (range-query-hash).  The CDN uses a
+              // challenge-response protocol where a hash embedded in the first-chunk response
+              // must be included in every subsequent chunk request.  ExoPlayer does not
+              // implement this protocol, so any non-zero start position returns HTTP 416.
+              // Fix: skip n-deobfuscation for IOS (it uses a different token scheme and
+              // applying the WEB deobfuscator corrupts the URL), and request the entire
+              // remaining content in a single GET so the CDN never needs to issue a
+              // challenge for chunk 2+.
+              //
+              // WEB_REMIX/WEB URLs: apply n-parameter deobfuscation (NewPipeExtractor) and
+              // use normal 512 KB chunked streaming — no rqh=1, no svpuc=1.
+              val isIosUrl = cache.playableUrl.contains("c=IOS")
+              val deobUrl = if (isIosUrl) {
                   cache.playableUrl
               } else {
                   YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated( songId, cache.playableUrl )
               }
-              val chunkLen = CHUNK_LENGTH.takeIf { queryInChunks } ?: cache.contentLength
+              // IOS: request everything from the current position to end-of-file in one shot.
+              // WEB_REMIX: standard 512 KB chunks (or full file when queryInChunks=false).
+              val chunkLen = when {
+                  isIosUrl     -> cache.contentLength - position
+                  queryInChunks -> CHUNK_LENGTH
+                  else         -> cache.contentLength
+              }
                 // YouTube CDN sets rqh=1 (range-query-hash required): HTTP Range headers
                 // are rejected for non-zero start positions.  Only a request starting at
                 // byte 0 survives via HTTP Range header; every subsequent chunk must encode
@@ -478,13 +493,16 @@
                 // bytes via the URL parameter, and ExoPlayer/CacheDataSource store them at
                 // the right absolute offset (chunkStart) in the playback stream.
                 val chunkStart = position           // absolute byte offset in the stream
-                val chunkEnd   = chunkStart + chunkLen - 1L
+                // Cap chunkEnd at contentLength-1 to prevent an out-of-bounds range that
+                // would cause HTTP 416 when position + chunkLen exceeds the file size.
+                val chunkEnd   = minOf(chunkStart + chunkLen - 1L, cache.contentLength - 1L)
+                val actualLen  = chunkEnd - chunkStart + 1L
                 val uri = "${deobUrl}&cpn=${cache.cpn}&range=${chunkStart}-${chunkEnd}".toUri()
                 dataSpec.buildUpon()
                     .setUri( uri )
                     .setPosition( chunkStart )
                     .setUriPositionOffset( chunkStart )
-                    .setLength( chunkLen )
+                    .setLength( actualLen )
                     .build()
             }
       }
